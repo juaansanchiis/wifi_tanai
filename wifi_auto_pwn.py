@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import re
+import sys
 import time
 import subprocess
 from dataclasses import dataclass
@@ -116,7 +117,11 @@ class WiFiAutoPwn:
         self._run_command(phisher_cmd, background=True)
 
 if __name__ == "__main__":
-    interface = input("Interfaz WiFi (ej: wlan0): ").strip()
+    # Si se pasa un argumento de línea de comandos, se utiliza; de lo contrario se solicita la interfaz
+    if len(sys.argv) > 1:
+        interface = sys.argv[1]
+    else:
+        interface = input("Interfaz WiFi (ej: wlan0): ").strip()
     tool = WiFiAutoPwn(interface)
     networks = tool.scan_networks()
     for i, net in enumerate(networks):
